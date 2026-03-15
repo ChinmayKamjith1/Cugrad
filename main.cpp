@@ -200,38 +200,168 @@ std::shared_ptr<Value> tanh(std::shared_ptr<Value> self){
     return out;
 }
 
+//relu
+std::shared_ptr<Value> relu(std::shared_ptr<Value> self){
+    //forward compute
+    double data = self->data > 0 ? self->data : 0;
+
+    auto out = std::make_shared<Value>(
+        data,
+        std::vector<std::shared_ptr<Value>> {self},
+        "relu"
+    );
+
+    out->_backward = [self, out](){  
+        self->grad += (out->data > 0 ? 1 : 0) * out->grad;
+    };
+
+    return out;
+}
+
+#include <random>
+
+class Neuron {
+public:
+    std::vector<std::shared_ptr<Value>> w;
+    std::shared_ptr<Value> b;
+    bool nonlin;
+
+    Neuron(int nin, bool nonlin=true) {
+        this->nonlin = nonlin;
+        // 1. Setup random number generator for weights [-1, 1]
+        static std::default_random_engine gen;
+        std::uniform_real_distribution<double> dist(-1.0, 1.0);
+
+        // 2. Initialize weights
+        for (int i = 0; i < nin; ++i) {
+            w.push_back(std::make_shared<Value>(dist(gen)));
+        }
+        // 3. Initialize bias
+        b = std::make_shared<Value>(dist(gen));
+    }
+
+    // The forward pass: y = relu(sum(wi*xi) + b)
+    std::shared_ptr<Value> operator()(const std::vector<std::shared_ptr<Value>>& x) {
+        auto act = b; 
+        for (size_t i = 0; i < w.size(); ++i) {
+            act = act + (w[i] * x[i]); // Summing inputs * weights [cite: 170-172, 262]
+        }
+        return nonlin ? tanh(act) : act;
+    }
+
+    std::vector<std::shared_ptr<Value>> parameters() {
+        std::vector<std::shared_ptr<Value>> params = w;
+        params.push_back(b);
+        return params;
+    }
+};
+
+class Layer {
+public:
+    std::vector<Neuron> neurons;
+
+    // nin: number of inputs; nout: number of neurons in this layer
+    Layer(int nin, int nout, bool nonlin=true) {
+        for (int i = 0; i < nout; ++i) {
+            neurons.emplace_back(nin, nonlin); // 
+        }
+    }
+
+    // Forward pass: returns the output of every neuron in the layer
+    std::vector<std::shared_ptr<Value>> operator()(const std::vector<std::shared_ptr<Value>>& x) {
+        std::vector<std::shared_ptr<Value>> outs;
+        for (auto& n : neurons) {
+            outs.push_back(n(x)); // 
+        }
+        return outs;
+    }
+
+    // Flattens all parameters (w and b) from every neuron into one list
+    std::vector<std::shared_ptr<Value>> parameters() {
+        std::vector<std::shared_ptr<Value>> params;
+        for (auto& n : neurons) {
+            std::vector<std::shared_ptr<Value>> p = n.parameters(); // 
+            params.insert(params.end(), p.begin(), p.end());
+        }
+        return params;
+    }
+};
+
+class MLP{
+public: 
+    std::vector<Layer> layers;
+
+    MLP(int nin, std::vector<int> nouts){
+        std::vector<int> sz = {nin};
+        sz.insert(sz.end(), nouts.begin(), nouts.end());
+
+        for (size_t i = 0; i < nouts.size(); ++i) {
+            layers.emplace_back(sz[i], sz[i+1], i != nouts.size() - 1);
+        }
+    }
+
+    std::vector<std::shared_ptr<Value>> operator()(std::vector<std::shared_ptr<Value>> x){
+        for (auto& layer : layers){
+            x = layer(x);
+        }
+        return x;
+    }
+
+    // Gathers every single weight and bias in the entire network
+    std::vector<std::shared_ptr<Value>> parameters() {
+        std::vector<std::shared_ptr<Value>> params;
+        for (auto& layer : layers) {
+            std::vector<std::shared_ptr<Value>> lp = layer.parameters();
+            params.insert(params.end(), lp.begin(), lp.end());
+        }
+        return params;
+    }
+};
+
 int main() {
-    // 1. Define the Inputs (matching your screenshot)
-    auto a = std::make_shared<Value>(2.0);
-    auto b = std::make_shared<Value>(-3.0);
-    auto c = std::make_shared<Value>(10.0);
-    auto f = std::make_shared<Value>(-2.0);
 
-    // 2. Forward Pass
-    // e = a * b
-    auto e = a * b;
-    
-    // d = e + c
-    auto d = e + c;
-    
-    // L = d * f
-    auto L = d * f;
+    std::vector<std::vector<std::shared_ptr<Value>>> xs = {
+        { std::make_shared<Value>(2.0), std::make_shared<Value>(3.0), std::make_shared<Value>(-1.0) },
+        { std::make_shared<Value>(3.0), std::make_shared<Value>(1.0), std::make_shared<Value>(0.5) },
+        { std::make_shared<Value>(0.5), std::make_shared<Value>(1.0), std::make_shared<Value>(1.0) },
+        { std::make_shared<Value>(1.0), std::make_shared<Value>(1.0), std::make_shared<Value>(1.0) }
+    };
 
-    // 3. Backward Pass
-    L->backward();
+    std::vector<double> ys = {1, -1, -1, 1};
 
-    // 4. Verify Results
-    std::cout << "--- Forward Pass ---\n";
-    std::cout << "L data: " << L->data << " (Expected: -8.0)\n\n";
+    MLP model(3, {3,3,1});
 
-    std::cout << "--- Backward Pass (Gradients) ---\n";
-    std::cout << "L.grad: " << L->grad << " (Expected: 1.0)\n";
-    std::cout << "f.grad: " << f->grad << " (Expected: 4.0)\n";
-    std::cout << "d.grad: " << d->grad << " (Expected: -2.0)\n";
-    std::cout << "e.grad: " << e->grad << " (Expected: -2.0)\n";
-    std::cout << "c.grad: " << c->grad << " (Expected: -2.0)\n";
-    std::cout << "b.grad: " << b->grad << " (Expected: -4.0)\n";
-    std::cout << "a.grad: " << a->grad << " (Expected: 6.0)\n";
+    for (int k = 0; k < 50000; ++k) {
+        
+        // --- FORWARD PASS ---
+        std::vector<std::shared_ptr<Value>> ypred;
+        for (auto& x : xs) {
+            ypred.push_back(model(x)[0]); // Get the single output from the MLP [cite: 309]
+        }
+
+        // --- LOSS CALCULATION (Mean Squared Error) ---
+        auto loss = std::make_shared<Value>(0.0);
+        for (size_t i = 0; i < ys.size(); ++i) {
+            auto diff = ypred[i] - ys[i];
+            loss = loss + (diff * diff); // 
+        }
+
+        // --- BACKWARD PASS ---
+        // Crucial: Reset gradients to zero before backprop 
+        for (auto p : model.parameters()) {
+            p->grad = 0.0;
+        }
+        
+        loss->backward(); // [cite: 316]
+
+        // --- UPDATE (Gradient Descent) ---
+        double learning_rate = 0.001; // [cite: 319]
+        for (auto p : model.parameters()) {
+            p->data += -learning_rate * p->grad; // [cite: 319]
+        }
+
+        std::cout << "Epoch " << k << " | Loss: " << loss->data << std::endl; // [cite: 320]
+    }
 
     return 0;
-}
+};
